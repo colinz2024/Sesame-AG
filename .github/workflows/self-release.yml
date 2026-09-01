@@ -1,0 +1,129 @@
+# Build Self Release - colinz2024/Sesame-AG fork 专用
+# 用途：手动打包 dev 分支（含 RuntimeIdentityGuard 双开修复）的 release APK
+# 为什么不需要官方 android.yml：
+#   1) dev 分支 build.gradle.kts 的 release 变体已配置 signingConfig = debug 签名
+#      → assembleRelease 产物直接可安装，无需任何 secrets
+#   2) 官方 android.yml 的 preflight 强制要求官方签名密钥 + 官方证书指纹，
+#      fork 里没有且无法伪造 → 手动触发必然被拦
+# 使用：上传到 .github/workflows/ 目录（dev 分支）→ Actions → 本 workflow → Run workflow → 分支选 dev
+name: Build Self Release
+
+run-name: Build Self Release - ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+
+env:
+  CI: "true"
+  JAVA_DISTRIBUTION: "oracle"
+  JAVA_VERSION: "17.0.1"
+  ANDROID_API_LEVEL: "37"
+  ANDROID_PLATFORM: "android-37.0"
+  ANDROID_BUILD_TOOLS: "37.0.0"
+  RELEASE_DIR: app/build/outputs/apk/release
+
+concurrency:
+  group: self-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Set Timezone to Asia/Shanghai
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo timedatectl set-timezone Asia/Shanghai
+          echo "Current time: $(date)"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: x64
+          check-latest: false
+          cache: gradle
+
+      - name: Pin Gradle Java Home
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ORG_GRADLE_JAVA_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ""
+
+      - name: Install Required Android SDK Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+          # `yes` will receive SIGPIPE after sdkmanager finishes reading input.
+          # Run this pipeline without pipefail so the step reflects sdkmanager's exit code.
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-version: wrapper
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 不传 -PofficialSigningCertSha256：build.gradle.kts 中该参数为空值合法，
+          # release 变体已用 debug 签名，产物可直接安装
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Stage APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find "${RELEASE_DIR}" -maxdepth 1 -type f -name "*.apk" | sort)
+          if [[ ${#apks[@]} -eq 0 ]]; then
+            echo "No release APKs found in ${RELEASE_DIR}" >&2
+            exit 1
+          fi
+          echo "Found ${#apks[@]} APK(s):"
+          for apk in "${apks[@]}"; do
+            ls -lh "${apk}"
+          done
+
+      - name: Verify APK Signatures (debug-signed, self-use)
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
+          for apk in "${RELEASE_DIR}"/*.apk; do
+            "${apksigner}" verify --verbose --print-certs "${apk}" | head -5
+            echo "---"
+          done
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: sesame-ag-self-release-${{ github.ref_name }}
+          path: ${{ env.RELEASE_DIR }}/*.apk
+          if-no-files-found: error
