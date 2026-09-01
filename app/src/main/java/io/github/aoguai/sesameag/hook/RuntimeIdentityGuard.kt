@@ -55,7 +55,7 @@ object RuntimeIdentityGuard {
         val userId = androidUserId(applicationInfo.uid)
         val decision = when {
             packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_mismatch")
-            userId != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+            userId < 0 -> reject("module_invalid_uid")
             sourceDir.isBlank() -> reject("module_source_missing")
             else -> {
                 moduleSnapshot = ModuleSnapshot(applicationInfo.uid, sourceDir)
@@ -84,9 +84,9 @@ object RuntimeIdentityGuard {
             !isSupportedTargetProcess(targetProcessName) -> reject("target_unsupported_process")
             targetProcessName == General.PACKAGE_NAME && appProcessName != General.PACKAGE_NAME ->
                 reject("target_application_process_mismatch")
-            userId != PRIMARY_ANDROID_USER_ID -> reject("target_non_primary_user")
+            userId < 0 -> reject("target_invalid_uid")
             sourceDir.isBlank() -> reject("target_source_missing")
-            androidUserId(module.uid) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+            androidUserId(module.uid) < 0 -> reject("module_invalid_uid")
             else -> {
                 targetSnapshot = TargetSnapshot(applicationInfo.uid, sourceDir, targetProcessName)
                 attachedIdentity = null
@@ -113,7 +113,7 @@ object RuntimeIdentityGuard {
                 !matchesTargetApplication(targetInfo, target) -> reject("target_package_manager_mismatch")
                 moduleInfo.packageName != General.MODULE_PACKAGE_NAME -> reject("module_package_manager_mismatch")
                 moduleInfo.uid != module.uid -> reject("module_uid_mismatch")
-                androidUserId(moduleInfo.uid) != PRIMARY_ANDROID_USER_ID -> reject("module_non_primary_user")
+                androidUserId(moduleInfo.uid) < 0 -> reject("module_invalid_uid")
                 moduleInfo.sourceDir.orEmpty() != module.sourceDir -> reject("module_source_mismatch")
                 else -> {
                     attachedIdentity = RuntimeIdentity(
@@ -161,7 +161,7 @@ object RuntimeIdentityGuard {
     private fun matchesTargetApplication(info: ApplicationInfo, target: TargetSnapshot): Boolean =
         info.packageName == General.PACKAGE_NAME &&
             info.uid == target.uid &&
-            androidUserId(info.uid) == PRIMARY_ANDROID_USER_ID &&
+            androidUserId(info.uid) >= 0 &&
             info.sourceDir.orEmpty() == target.sourceDir
 
     /** UserHandle.getUserId is hidden from this module's compile SDK; Android reserves 100000 UIDs per user. */
